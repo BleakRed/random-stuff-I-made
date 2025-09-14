@@ -5,6 +5,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 import time
 
+video_id = "abcdEFGjkg"  # change this
+
 # Step 1: Auth
 SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
 
@@ -47,7 +49,6 @@ def color_name(name: str) -> str:
 
 
 # Step 2: Get Live Chat ID
-video_id = "abcdEFGjkg"  # change this
 
 video_response = (
     youtube.videos().list(part="liveStreamingDetails", id=video_id).execute()
