@@ -7,11 +7,12 @@ import queue
 import time
 import requests
 import re
+import sys
 
 # ===============================
 # CONFIG
 # ===============================
-CHANNEL_HANDLE = "@thevtuberch"  # YouTube channel handle
+CHANNEL_HANDLE = "@LofiGirl"  # YouTube channel handle
 REFRESH_INTERVAL = 1             # seconds between checking new messages
 MAX_LENGTH = 200                 # max message length for sending (optional)
 YOUR_NAME = "Me"                 # Replace with your YouTube display name
@@ -40,7 +41,7 @@ def color_name(name: str) -> str:
 tts_engine = pyttsx3.init()
 tts_engine.setProperty("voice", "gmw/en-us")  # Your preferred voice
 tts_engine.setProperty("rate", 150)
-tts_engine.setProperty("volume", 1.0)
+tts_engine.setProperty("volume", 0.8)
 
 tts_queue = queue.Queue()
 
@@ -64,23 +65,30 @@ threading.Thread(target=tts_worker, daemon=True).start()
 def speak_async(text):
     tts_queue.put(text)
 
+
 # ===============================
 # Scrape live video ID from channel handle
 # ===============================
-
-
 def get_live_video_id(channel_handle: str) -> str:
     url = f"https://www.youtube.com/{channel_handle}/live"
     resp = requests.get(url)
-    # Look for "videoId":"XXXXXX" in the page HTML
+    
+    # First check if stream is live
+    if '"isLiveNow":true' not in resp.text:
+        return None
+
+    # Then extract video ID
     match = re.search(r'"videoId":"([a-zA-Z0-9_-]{11})"', resp.text)
     if match:
         return match.group(1)
-    else:
-        raise Exception(f"No live video currently for {channel_handle}.")
+    return None
 
 
 video_id = get_live_video_id(CHANNEL_HANDLE)
+if not video_id:
+    print(f"{RED}No live stream currently for {CHANNEL_HANDLE}.{RESET}")
+    sys.exit(1)
+
 print(f"Live video ID: {video_id}")
 
 # ===============================
