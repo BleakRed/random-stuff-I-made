@@ -9,11 +9,13 @@ import sys
 import json
 import os
 import random
+from flask import Flask, render_template_string, jsonify
+import webview
 
 # ===============================
 # CONFIG
 # ===============================
-CHANNEL_HANDLE = "@BleakRedMN"  # YouTube channel handle
+CHANNEL_HANDLE = "@TheVtuberCh"  # YouTube channel handle
 REFRESH_INTERVAL = 5  # seconds between checking new messages
 YOUR_NAME = "Me"  # Replace with your YouTube display name
 SETTINGS_FILE = "user_settings.json"
@@ -32,14 +34,72 @@ BOLD = "\033[1m"
 COLORS = [RED, GREEN, BLUE, CYAN, YELLOW, MAGENTA]
 
 # ===============================
+# Flask App for Overlay
+# ===============================
+app = Flask(__name__)
+chat_display = []  # will store last messages for overlay
+
+
+@app.route("/")
+def index():
+    html = """
+    <html>
+    <head>
+        <style>
+            body {
+                background: rgba(0,0,0,0);
+                margin: 0;
+                padding: 10px;
+                color: white;
+                font-family: 'Segoe UI', sans-serif;
+                overflow: hidden;
+            }
+            .msg {
+                margin: 3px 0;
+                font-size: 16px;
+                text-shadow: 2px 2px 4px black;
+            }
+            .author {
+                font-weight: bold;
+                margin-right: 5px;
+            }
+        </style>
+        <script>
+        async function updateChat() {
+            const res = await fetch("/data");
+            const data = await res.json();
+            const container = document.getElementById("chat");
+            container.innerHTML = "";
+            data.forEach(msg => {
+                const div = document.createElement("div");
+                div.className = "msg";
+                div.innerHTML = `<span class="author" style="color:${msg.color}">${msg.author}:</span> ${msg.message}`;
+                container.appendChild(div);
+            });
+        }
+        setInterval(updateChat, 1000);
+        </script>
+    </head>
+    <body>
+        <div id="chat"></div>
+    </body>
+    </html>
+    """
+    return render_template_string(html)
+
+
+@app.route("/data")
+def data():
+    return jsonify(chat_display[-10:])  # show last 10 messages
+
+
+# ===============================
 # TTS Setup
 # ===============================
 tts_engine = pyttsx3.init()
 voices = tts_engine.getProperty("voices")
-
 tts_engine.setProperty("rate", 150)
 tts_engine.setProperty("volume", 0.8)
-
 tts_queue = queue.Queue()
 
 
@@ -65,27 +125,21 @@ def speak_async(text, voice_id):
 
 
 # ===============================
-# User Settings (Persistent + Hot Reload)
+# User Settings (Persistent)
 # ===============================
-user_settings = {}
-
-
 def load_user_settings():
-    global user_settings
     if os.path.exists(SETTINGS_FILE):
-        try:
-            with open(SETTINGS_FILE, "r") as f:
-                user_settings = json.load(f)
-            print(f"{GREEN}🔄 User settings reloaded.{RESET}")
-        except Exception as e:
-            print(f"{RED}⚠️ Failed to load settings: {e}{RESET}")
-    else:
-        user_settings = {}
+        with open(SETTINGS_FILE, "r") as f:
+            return json.load(f)
+    return {}
 
 
 def save_user_settings():
     with open(SETTINGS_FILE, "w") as f:
-        json.dump(user_settings, f, indent=2)
+        json.dump(user_settings, f)
+
+
+user_settings = load_user_settings()
 
 
 def get_user_settings(username):
@@ -99,43 +153,17 @@ def get_user_settings(username):
 
 
 # ===============================
-# Hot Reload Listener
-# ===============================
-def reload_listener():
-    while True:
-        cmd = input().strip().lower()
-        if cmd == "r":
-            load_user_settings()
-        elif cmd == "q":
-            print("🛑 Quit requested.")
-            os._exit(0)
-
-
-threading.Thread(target=reload_listener, daemon=True).start()
-
-
-# ===============================
 # Scrape live video ID
 # ===============================
 def get_live_video_id(channel_handle: str) -> str:
     url = f"https://www.youtube.com/{channel_handle}/live"
     resp = requests.get(url)
-
     if '"isLiveNow":true' not in resp.text:
         return None
-
     match = re.search(r'"videoId":"([a-zA-Z0-9_-]{11})"', resp.text)
     if match:
         return match.group(1)
     return None
-
-
-video_id = get_live_video_id(CHANNEL_HANDLE)
-if not video_id:
-    print(f"{RED}❌ No live stream currently for {CHANNEL_HANDLE}.{RESET}")
-    sys.exit(1)
-
-print(f"✅ Live video ID: {video_id}")
 
 
 # ===============================
@@ -144,7 +172,6 @@ print(f"✅ Live video ID: {video_id}")
 def run_chat(video_id):
     processed_messages = set()
     print(f"🎧 Listening to live chat for {CHANNEL_HANDLE}...\n")
-    load_user_settings()
 
     while True:
         try:
@@ -166,6 +193,16 @@ def run_chat(video_id):
 
                     print(f"{color}{author}{RESET}: {message}")
 
+                    chat_display.append(
+                        {
+                            "author": author,
+                            "message": message,
+                            "color": color.replace(
+                                "\033", "#"
+                            ),  # just to ensure valid CSS color
+                        }
+                    )
+
                     if author != YOUR_NAME:
                         speak_async(f"{author} says {message}", voice_id)
 
@@ -177,8 +214,39 @@ def run_chat(video_id):
             continue
 
 
-try:
-    run_chat(video_id)
-except KeyboardInterrupt:
-    print("\n🛑 Stopping chat listener...")
-    save_user_settings()
+# ===============================
+# Overlay Runner (Flask + Webview)
+# ===============================
+def run_overlay():
+    def start_flask():
+        app.run(host="127.0.0.1", port=5050, debug=False, use_reloader=False)
+
+    threading.Thread(target=start_flask, daemon=True).start()
+    time.sleep(1)
+    webview.create_window(
+        "Chat Overlay",
+        "http://127.0.0.1:5050",
+        frameless=True,
+        transparent=True,
+        width=500,
+        height=400,
+        easy_drag=True,
+        on_top=True,
+    )
+    webview.start()
+
+
+# ===============================
+# MAIN
+# ===============================
+if __name__ == "__main__":
+    video_id = get_live_video_id(CHANNEL_HANDLE)
+    if not video_id:
+        print(f"{RED}❌ No live stream currently for {CHANNEL_HANDLE}.{RESET}")
+        sys.exit(1)
+
+    print(f"✅ Live video ID: {video_id}")
+
+    threading.Thread(target=run_chat, args=(video_id,), daemon=True).start()
+
+    run_overlay()

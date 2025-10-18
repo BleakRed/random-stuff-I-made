@@ -9,49 +9,102 @@ import sys
 import json
 import os
 import random
+from flask import Flask, render_template_string, jsonify
 
 # ===============================
 # CONFIG
 # ===============================
-CHANNEL_HANDLE = "@BleakRedMN"  # YouTube channel handle
-REFRESH_INTERVAL = 5  # seconds between checking new messages
-YOUR_NAME = "Me"  # Replace with your YouTube display name
+CHANNEL_HANDLE = "@TheVtuberCh"
+REFRESH_INTERVAL = 5
+YOUR_NAME = "Me"
 SETTINGS_FILE = "user_settings.json"
 
 # ===============================
-# ANSI Colors for terminal
+# Terminal Colors
 # ===============================
 RESET = "\033[0m"
-RED = "\033[31m"
-GREEN = "\033[32m"
-BLUE = "\033[34m"
-CYAN = "\033[36m"
-YELLOW = "\033[33m"
-MAGENTA = "\033[35m"
-BOLD = "\033[1m"
-COLORS = [RED, GREEN, BLUE, CYAN, YELLOW, MAGENTA]
+COLORS = ["\033[31m", "\033[32m", "\033[34m", "\033[36m", "\033[33m", "\033[35m"]
+
+# ===============================
+# Flask Overlay Setup
+# ===============================
+app = Flask(__name__)
+chat_history = []
+current_tts = {"author": "", "message": ""}
+
+
+@app.route("/")
+def overlay():
+    html = """
+    <html>
+    <head>
+    <meta http-equiv="refresh" content="1">
+    <style>
+        body {
+            background: transparent;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 20px;
+            overflow: hidden;
+        }
+        .chatline {
+            margin-bottom: 4px;
+        }
+        .tts {
+            color: yellow;
+            font-weight: bold;
+            text-shadow: 0 0 10px yellow;
+            animation: fade 2s ease-out;
+        }
+        @keyframes fade {
+            0% {opacity: 1;}
+            100% {opacity: 0;}
+        }
+    </style>
+    </head>
+    <body>
+        {% for line in chat %}
+            <div class="chatline">{{ line }}</div>
+        {% endfor %}
+        {% if tts.author %}
+            <div class="tts">{{ tts.author }} says {{ tts.message }}</div>
+        {% endif %}
+    </body>
+    </html>
+    """
+    return render_template_string(html, chat=chat_history[-10:], tts=current_tts)
+
+
+# Run Flask server in a thread
+def run_overlay():
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+
+
+threading.Thread(target=run_overlay, daemon=True).start()
 
 # ===============================
 # TTS Setup
 # ===============================
 tts_engine = pyttsx3.init()
 voices = tts_engine.getProperty("voices")
-
 tts_engine.setProperty("rate", 150)
 tts_engine.setProperty("volume", 0.8)
-
 tts_queue = queue.Queue()
 
 
 def tts_worker():
     while True:
-        text, voice_id = tts_queue.get()
+        text, voice_id, author = tts_queue.get()
         if text is None:
             break
         try:
+            current_tts["author"] = author
+            current_tts["message"] = text
             tts_engine.setProperty("voice", voice_id)
             tts_engine.say(text)
             tts_engine.runAndWait()
+            current_tts["author"] = ""
+            current_tts["message"] = ""
         except Exception as e:
             print(f"TTS error: {e}")
         tts_queue.task_done()
@@ -60,32 +113,26 @@ def tts_worker():
 threading.Thread(target=tts_worker, daemon=True).start()
 
 
-def speak_async(text, voice_id):
-    tts_queue.put((text, voice_id))
+def speak_async(text, voice_id, author):
+    tts_queue.put((text, voice_id, author))
 
 
 # ===============================
-# User Settings (Persistent + Hot Reload)
+# Persistent User Settings
 # ===============================
-user_settings = {}
-
-
 def load_user_settings():
-    global user_settings
     if os.path.exists(SETTINGS_FILE):
-        try:
-            with open(SETTINGS_FILE, "r") as f:
-                user_settings = json.load(f)
-            print(f"{GREEN}🔄 User settings reloaded.{RESET}")
-        except Exception as e:
-            print(f"{RED}⚠️ Failed to load settings: {e}{RESET}")
-    else:
-        user_settings = {}
+        with open(SETTINGS_FILE, "r") as f:
+            return json.load(f)
+    return {}
 
 
 def save_user_settings():
     with open(SETTINGS_FILE, "w") as f:
-        json.dump(user_settings, f, indent=2)
+        json.dump(user_settings, f)
+
+
+user_settings = load_user_settings()
 
 
 def get_user_settings(username):
@@ -99,31 +146,13 @@ def get_user_settings(username):
 
 
 # ===============================
-# Hot Reload Listener
-# ===============================
-def reload_listener():
-    while True:
-        cmd = input().strip().lower()
-        if cmd == "r":
-            load_user_settings()
-        elif cmd == "q":
-            print("🛑 Quit requested.")
-            os._exit(0)
-
-
-threading.Thread(target=reload_listener, daemon=True).start()
-
-
-# ===============================
-# Scrape live video ID
+# YouTube Live ID Fetcher
 # ===============================
 def get_live_video_id(channel_handle: str) -> str:
     url = f"https://www.youtube.com/{channel_handle}/live"
     resp = requests.get(url)
-
     if '"isLiveNow":true' not in resp.text:
         return None
-
     match = re.search(r'"videoId":"([a-zA-Z0-9_-]{11})"', resp.text)
     if match:
         return match.group(1)
@@ -132,7 +161,7 @@ def get_live_video_id(channel_handle: str) -> str:
 
 video_id = get_live_video_id(CHANNEL_HANDLE)
 if not video_id:
-    print(f"{RED}❌ No live stream currently for {CHANNEL_HANDLE}.{RESET}")
+    print(f"\033[31m❌ No live stream currently for {CHANNEL_HANDLE}.\033[0m")
     sys.exit(1)
 
 print(f"✅ Live video ID: {video_id}")
@@ -144,12 +173,10 @@ print(f"✅ Live video ID: {video_id}")
 def run_chat(video_id):
     processed_messages = set()
     print(f"🎧 Listening to live chat for {CHANNEL_HANDLE}...\n")
-    load_user_settings()
 
     while True:
         try:
             chat = pytchat.create(video_id=video_id)
-
             while chat.is_alive():
                 for c in chat.get().sync_items():
                     msg_id = c.id
@@ -159,22 +186,20 @@ def run_chat(video_id):
 
                     author = c.author.name
                     message = c.message
-
                     settings = get_user_settings(author)
                     color = settings["color"]
                     voice_id = settings["voice"]
 
-                    print(f"{color}{author}{RESET}: {message}")
+                    line = f"{author}: {message}"
+                    print(f"{color}{line}{RESET}")
+                    chat_history.append(line)
 
                     if author != YOUR_NAME:
-                        speak_async(f"{author} says {message}", voice_id)
-
+                        speak_async(message, voice_id, author)
                 time.sleep(REFRESH_INTERVAL)
-
         except Exception as e:
             print(f"⚠️ Chat connection error: {e}. Reconnecting in 5s...")
             time.sleep(5)
-            continue
 
 
 try:
